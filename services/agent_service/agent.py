@@ -56,28 +56,38 @@ def analyzer(state: AgentState):
 
 def vision_node(state: AgentState):
     video_data = state.get("video_input")
+    expected_pill = state.get("expected_pill")
+    
     try:
         response = requests.post(
             f"{settings.VISION_SERVICE_URL}/verify-intake",
-            json={"video": video_data}
+            json={"video": video_data},
+            timeout=10
         )
-        result = response.json() 
+        result = response.json()
+        
         is_verified = result.get("confirmed", False)
         pill_detected = result.get("label", "unknown")
-        if is_verified:
+        if is_verified and pill_detected.lower() == expected_pill.lower():
             return {
-                "messages": [AIMessage(content=f"Ya3tik es-saha, choftik khdhit {pill_detected}. Klemek dima meryeguel!")],
-                "medication_confirmed": True
+                "messages": [AIMessage(content=f"Ya3tik es-saha! Thabta {pill_detected}. Kol chay meryeguel.")],
+                "status": "success"
+            }
+    
+        elif is_verified and pill_detected.lower() != expected_pill.lower():
+            return {
+                "messages": [AIMessage(content=f"Attention! Choftik khdhit {pill_detected} ama netsawer lezem tekhou {expected_pill}. Thabet aman!")],
+                "status": "wrong_pill"
             }
         else:
             return {
-                "messages": [AIMessage(content="Ma najemtech nthabet mel tswira. Aman 3awed thabet el camara fih.")],
-                "medication_confirmed": False
+                "messages": [AIMessage(content="Ma najemtech na3ref el dwa exact. A3melli tswira oukhra awdheh aman.")],
+                "status": "retry"
             }
-    except Exception as e:
-        print(f"Communication error with vision-service: {e}")
-        return {"messages": [AIMessage(content="Fama mouchkla sghira fel xhadma mte3i. Lahdha taw nchoufha.")]}
 
+    except Exception as e:
+        return {"messages": [AIMessage(content="Service t3eb chwaya, lahza taw nraja3lek l'khbar.")]}
+        
 def safety_node(state: AgentState):
     """
     Checks for drug-drug interactions and provides safety warnings in Derja.
