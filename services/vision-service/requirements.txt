@@ -1,17 +1,27 @@
-# ── Core vision ──────────────────────────────────────────────────────────────
-opencv-python-headless>=4.9.0    # headless for server/mobile; use opencv-python for demo
-mediapipe>=0.10.9                 # pose + hand + face tracking
-ultralytics>=8.2.0                # YOLOv8 (object detection + classification)
+# ── Core vision ───────────────────────────────────────────────────────────────
+opencv-python-headless>=4.9.0
+mediapipe>=0.10.9
+ultralytics>=8.2.0               # YOLOv8 (local ONNX fallback + COCO sirop)
+
+# ── Roboflow inference API ────────────────────────────────────────────────────
+inference-sdk>=0.9.0             # pip install inference-sdk
+# Set env vars in .env (see robotflowdetector.py):
+#   ROBOFLOW_API_KEY     = your key
+#   ROBOFLOW_WORKSPACE   = meriam-cherif
+#   ROBOFLOW_PROJECT     = pills-detection-s9ywn
+#   ROBOFLOW_VERSION     = 19
+#   ROBOFLOW_WORKFLOW_ID = your-workflow-slug  (optional — leave empty for model endpoint)
+#   USE_WORKFLOW         = false
 
 # ── OCR ───────────────────────────────────────────────────────────────────────
-pytesseract>=0.3.10               # Python wrapper for Tesseract
-# Tesseract binary must also be installed:
+pytesseract>=0.3.10
+# Tesseract binary:
 #   Ubuntu/Debian : sudo apt-get install tesseract-ocr tesseract-ocr-fra tesseract-ocr-ara
 #   macOS         : brew install tesseract
 #   Windows       : https://github.com/UB-Mannheim/tesseract/wiki
 
 # ── Fuzzy matching ────────────────────────────────────────────────────────────
-rapidfuzz>=3.6.1                  # fast Levenshtein / partial-ratio matching
+rapidfuzz>=3.6.1
 
 # ── API server ────────────────────────────────────────────────────────────────
 fastapi>=0.111.0
