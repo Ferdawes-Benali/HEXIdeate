@@ -3,26 +3,43 @@ detector.py
 ───────────
 Unified vision pipeline for DwaFi (دوائي).
 
-Orchestrates:
-  ┌─────────────────────────────────┐
-  │  Camera / video stream          │
-  └────────────┬────────────────────┘
-               │ BGR frames
-       ┌───────▼──────────┐
-       │  ObjectDetector  │  (YOLOv8 — pill / bottle / cup)
-       └───────┬──────────┘
-               │ ObjectDetectionResult
-       ┌───────▼──────────┐
-       │ BehaviorDetector │  (MediaPipe pose + hands + face)
-       └───────┬──────────┘
-               │ BehaviorResult
-               │
-       ┌───────▼──────────┐        triggered on demand
-       │  MedVerifier     │  ◄──── (snapshot for OCR / YOLO verify)
-       └───────┬──────────┘
-               │ MedVerifyResult
-               ▼
-         VisionOutput   ──► agent.py / vision_node
+Two-phase orchestration (mirrors med_verifier.py design):
+
+  ┌──────────────────────────────────────────────┐
+  │             Camera / video stream            │
+  └───────────────────┬──────────────────────────┘
+                      │ BGR frames
+              ┌───────▼──────────┐
+              │  ObjectDetector  │  best_model.onnx (tablets/capsules)
+              │  (two-stage)     │  COCO yolov8n    (bottle/cup → sirop)
+              └───────┬──────────┘
+                      │ ObjectDetectionResult (.behavior_score_boost)
+              ┌───────▼──────────┐
+              │ BehaviorDetector │  MediaPipe pose + hands + face
+              └───────┬──────────┘
+                      │ BehaviorResult (.score for Phase 2)
+                      │
+            ╔═════════▼══════════════════════════════╗
+            ║  PHASE 1 — IDENTIFICATION              ║
+            ║  MedVerifier.identify(frame)           ║
+            ║  OCR → rapidfuzz → CORRECT/WRONG/UNC  ║
+            ║  Fallback: YOLO presence (UNCERTAIN)   ║
+            ╚═════════╤══════════════════════════════╝
+                      │ MedVerifyResult
+                      │
+            if CORRECT → fire alert to agent ("C'est ton Doliprane")
+                      │
+            ╔═════════▼══════════════════════════════╗
+            ║  PHASE 2 — INTAKE CONFIRMATION        ║
+            ║  MedVerifier.check_intake(frame,       ║
+            ║              behavior_score)           ║
+            ║  best_model.onnx pill present?         ║
+            ║  COCO sirop present?                   ║
+            ║  + behavior score → INTAKE_CONFIRMED   ║
+            ╚═════════╤══════════════════════════════╝
+                      │ IntakeResult
+                      ▼
+                VisionOutput  ──► agent.py / vision_node
 """
 
 from __future__ import annotations
@@ -30,57 +47,73 @@ from __future__ import annotations
 import time
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Callable
 
 import cv2
 import numpy as np
 
 from .behavior_detector import BehaviorDetector, BehaviorResult
-from .med_verifier      import MedVerifier,      MedVerifyResult
-from .object_detector   import ObjectDetector,   ObjectDetectionResult
+from .med_verifier      import MedVerifier, MedVerifyResult, IntakeResult
+from .object_detector   import ObjectDetector, ObjectDetectionResult
 
 logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────
-# Unified output (consumed by agent.py)
+# Pipeline state enum
+# ──────────────────────────────────────────────
+
+class PipelinePhase:
+    IDENTIFYING = "IDENTIFYING"   # Phase 1: reading the label
+    INTAKE      = "INTAKE"        # Phase 2: confirming the patient takes it
+    DONE        = "DONE"          # confirmed or timed-out
+
+
+# ──────────────────────────────────────────────
+# Unified output
 # ──────────────────────────────────────────────
 
 @dataclass
 class VisionOutput:
     """Single payload returned to the agent after one verification session."""
 
+    # Phase 1 — Identification
+    id_label:        str   = "UNCERTAIN"   # CORRECT | WRONG | UNCERTAIN
+    id_confidence:   float = 0.0
+    id_med_name:     str   = ""
+    id_med_dose:     str   = ""
+    id_feedback:     str   = ""
+    id_method:       str   = "none"
+    alert_message:   str   = ""           # ready-to-send patient alert
+
+    # Phase 2 — Intake
+    intake_label:    str   = "INTAKE_NOT_DETECTED"
+    intake_conf:     float = 0.0
+    pill_visible:    bool  = False
+    sirop_visible:   bool  = False
+    best_class:      str   = ""
+    intake_feedback: str   = ""
+
     # Behavior
-    behavior_label:      str   = "NOT_TAKEN"    # TAKEN | UNCERTAIN | NOT_TAKEN
-    behavior_confidence: float = 0.0
-    behavior_score:      int   = 0
-    behavior_feedback:   str   = ""
-
-    # Medication verification
-    verified_label:      str   = "UNCERTAIN"    # CORRECT | WRONG | UNCERTAIN
-    verified_confidence: float = 0.0
-    verified_med_name:   str   = ""
-    verified_med_dose:   str   = ""
-    verify_feedback:     str   = ""
-
-    # Object detection summary
-    med_object_detected: bool  = False
-    liquid_med_detected: bool  = False
+    behavior_label:  str   = "NOT_TAKEN"
+    behavior_score:  int   = 0
 
     # Meta
-    confirmed: bool = False      # True only if TAKEN + CORRECT
+    confirmed:       bool  = False   # Phase 1 CORRECT + Phase 2 INTAKE_CONFIRMED
+    session_phase:   str   = PipelinePhase.IDENTIFYING
     session_duration_s: float = 0.0
 
     def to_agent_dict(self) -> dict:
-        """Serialise to the shape expected by vision_node in agent.py."""
         return {
-            "confirmed":    self.confirmed,
-            "label":        self.verified_med_name or "unknown",
-            "behavior":     self.behavior_label,
-            "confidence":   round(
-                (self.behavior_confidence + self.verified_confidence) / 2, 2
-            ),
-            "feedback":     self.verify_feedback or self.behavior_feedback,
+            "confirmed":       self.confirmed,
+            "label":           self.id_med_name or self.best_class or "unknown",
+            "id_result":       self.id_label,
+            "intake_result":   self.intake_label,
+            "behavior":        self.behavior_label,
+            "confidence":      round((self.id_confidence + self.intake_conf) / 2, 2),
+            "feedback":        self.intake_feedback or self.id_feedback,
+            "alert_message":   self.alert_message,
+            "pill_type":       self.best_class,
         }
 
 
@@ -90,75 +123,89 @@ class VisionOutput:
 
 class VisionPipeline:
     """
-    Full real-time pipeline.
+    Full two-phase real-time pipeline.
+
+    Phase 1 (IDENTIFYING): every frame runs OCR identification via
+    MedVerifier.identify().  Once the label is confidently read as CORRECT,
+    `on_id_confirmed` callback is fired (for the agent to send the patient
+    alert) and the pipeline transitions to Phase 2.
+
+    Phase 2 (INTAKE): MedVerifier.check_intake() + BehaviorDetector watch
+    the patient physically take the medication.  When INTAKE_CONFIRMED the
+    session ends with confirmed=True.
 
     Parameters
     ----------
-    prescription_source : str | dict | None
-        JSON path, dict, or None (uses built-in default prescriptions).
-    yolo_model_path : str
-        Path to YOLOv8 object-detection model (COCO nano or custom ONNX).
-    verify_model_path : str
-        Path to YOLOv8 model used as OCR fallback for package recognition.
-    behavior_window : int
-        Rolling-window size in frames for behavior scoring.
-    camera_index : int
-        OpenCV camera index (0 = default webcam / phone front camera).
-    target_fps : int
-        Cap inference rate to avoid overloading mobile CPUs.
+    prescription_source  : JSON path | dict | None
+    pill_model_path      : path to best_model.onnx
+    coco_model_path      : path to yolov8n.pt (sirop fallback only)
+    behavior_window      : rolling-window size in frames
+    camera_index         : OpenCV camera index
+    target_fps           : inference rate cap (mobile-friendly)
+    on_id_confirmed      : optional callback(MedVerifyResult) fired when
+                           Phase 1 returns CORRECT — use to send the alert
     """
+
+    # How many consecutive CORRECT frames before Phase 1 is locked in
+    ID_CONFIRM_FRAMES = 3
 
     def __init__(
         self,
         prescription_source=None,
-        yolo_model_path:    str = "yolov8n.pt",
-        verify_model_path:  str = "model/pill_yolov8n.onnx",
-        behavior_window:    int = 90,
-        camera_index:       int = 0,
-        target_fps:         int = 15,
+        pill_model_path:   str = "model/pill_yolov8n.onnx",
+        coco_model_path:   str = "yolov8n.pt",
+        behavior_window:   int = 90,
+        camera_index:      int = 0,
+        target_fps:        int = 15,
+        on_id_confirmed:   Optional[Callable[[MedVerifyResult], None]] = None,
     ):
-        self.behavior   = BehaviorDetector(window_size=behavior_window)
-        self.verifier   = MedVerifier(prescription_source, verify_model_path)
-        self.detector   = ObjectDetector(yolo_model_path)
-        self.camera_idx = camera_index
-        self.frame_gap  = 1.0 / target_fps
+        self.behavior         = BehaviorDetector(window_size=behavior_window)
+        self.verifier         = MedVerifier(
+            prescription_source,
+            yolo_model_path=pill_model_path,
+            coco_model_path=coco_model_path,
+        )
+        self.detector         = ObjectDetector(
+            pill_model_path=pill_model_path,
+            coco_model_path=coco_model_path,
+        )
+        self.camera_idx       = camera_index
+        self.frame_gap        = 1.0 / target_fps
+        self.on_id_confirmed  = on_id_confirmed
+        logger.info("VisionPipeline initialised (pill model: %s)", pill_model_path)
 
-        logger.info("VisionPipeline initialised.")
-
-    # ── One-shot verification (called by agent.py / vision_node) ──────────
+    # ── Session API ────────────────────────────
 
     def run_session(
         self,
-        duration_s: float = 10.0,
+        duration_s: float = 15.0,
         show_ui:    bool  = False,
     ) -> VisionOutput:
         """
-        Open the camera, run the full pipeline for `duration_s` seconds,
-        return a VisionOutput.
-
-        `show_ui=True` opens an OpenCV window (useful for development).
-        On mobile the Flutter app handles the UI; set show_ui=False.
+        Open camera, run full two-phase pipeline for up to `duration_s` seconds.
+        Returns VisionOutput.
         """
         cap = cv2.VideoCapture(self.camera_idx)
         if not cap.isOpened():
             logger.error("Camera not accessible.")
-            return VisionOutput(behavior_feedback="Camera not accessible.")
+            return VisionOutput(id_feedback="Camera not accessible.")
 
-        # Set lower resolution for mobile-friendliness
         cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-        start        = time.time()
-        last_tick    = start
-        verify_result: MedVerifyResult = MedVerifyResult()
-        behavior_result: BehaviorResult = BehaviorResult()
-        obj_result:  ObjectDetectionResult = ObjectDetectionResult()
-        verify_done  = False
+        start           = time.time()
+        last_tick       = start
+        phase           = PipelinePhase.IDENTIFYING
+        id_confirm_cnt  = 0
+
+        id_result     = MedVerifyResult()
+        intake_result = IntakeResult()
+        behav_result  = BehaviorResult()
+        obj_result    = ObjectDetectionResult()
 
         try:
             while (time.time() - start) < duration_s:
                 now = time.time()
-                # Throttle to target FPS
                 if (now - last_tick) < self.frame_gap:
                     continue
                 last_tick = now
@@ -168,42 +215,59 @@ class VisionPipeline:
                     logger.warning("Dropped frame.")
                     continue
 
-                # ── Object detection ───────────────────────────────────────
+                # ── Object detection (both phases need it) ─────────────────
                 obj_result = self.detector.detect(frame)
 
-                # Boost behavior score if YOLO sees a med object
-                # (we inject the detection into the behavior buffer via the
-                #  already-processed FrameEvidence — simplest: just forward
-                #  a flag to the next behavior call — done by enriching below)
+                # ── Behavior (both phases need score) ─────────────────────
+                behav_result = self.behavior.process_frame(
+                    frame,
+                    yolo_boost=obj_result.behavior_score_boost,
+                )
 
-                # ── Behavior analysis ──────────────────────────────────────
-                behavior_result = self.behavior.process_frame(frame)
+                # ══════════════════════════════════════════════════════════
+                #  PHASE 1 — IDENTIFICATION
+                # ══════════════════════════════════════════════════════════
+                if phase == PipelinePhase.IDENTIFYING:
+                    id_result = self.verifier.identify(frame)
 
-                # If YOLO confirms a med object, promote object_in_hand score
-                # by re-running with a synthetic boost (lightweight approach)
-                if obj_result.med_object_present:
-                    # Manually nudge the last evidence in the buffer
-                    if self.behavior._buffer:
-                        ev = self.behavior._buffer[-1]
-                        ev.object_in_hand = True
-                        ev.raw_score = min(
-                            ev.raw_score + 20,
-                            100
-                        )
+                    if id_result.label == "CORRECT":
+                        id_confirm_cnt += 1
+                        if id_confirm_cnt >= self.ID_CONFIRM_FRAMES:
+                            # Locked in — fire the alert and advance to Phase 2
+                            logger.info(
+                                "Phase 1 confirmed: %s %s",
+                                id_result.matched_name, id_result.matched_dose
+                            )
+                            if self.on_id_confirmed:
+                                self.on_id_confirmed(id_result)
+                            phase = PipelinePhase.INTAKE
+                    else:
+                        id_confirm_cnt = 0   # reset streak on non-CORRECT frame
 
-                # ── Package verification (once, on first confident frame) ──
-                if not verify_done and obj_result.med_object_present:
-                    verify_result = self.verifier.verify(frame)
-                    if verify_result.confidence >= 0.50:
-                        verify_done = True
+                # ══════════════════════════════════════════════════════════
+                #  PHASE 2 — INTAKE CONFIRMATION
+                # ══════════════════════════════════════════════════════════
+                elif phase == PipelinePhase.INTAKE:
+                    intake_result = self.verifier.check_intake(
+                        frame,
+                        behavior_score=behav_result.score,
+                    )
+                    if intake_result.label == "INTAKE_CONFIRMED":
+                        phase = PipelinePhase.DONE
+                        logger.info("Phase 2 confirmed: intake detected.")
+                        break   # session complete
 
                 # ── Optional debug UI ──────────────────────────────────────
                 if show_ui:
                     display = frame.copy()
                     display = self.detector.draw_boxes(display, obj_result)
-                    display = self.behavior.draw_debug(display, behavior_result)
-                    display = self.verifier.draw_debug(display, verify_result)
-                    _draw_realtime_hints(display, behavior_result, verify_result)
+                    if phase == PipelinePhase.IDENTIFYING:
+                        display = self.verifier.draw_debug(display, id_result)
+                    else:
+                        display = self.verifier.draw_intake_debug(display, intake_result)
+                    display = self.behavior.draw_debug(display, behav_result)
+                    _draw_realtime_hints(display, phase, id_result, intake_result,
+                                         behav_result, obj_result)
                     cv2.imshow("DwaFi Vision", display)
                     if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
                         break
@@ -214,81 +278,127 @@ class VisionPipeline:
                 cv2.destroyAllWindows()
             self.behavior.release()
 
-        elapsed = round(time.time() - start, 1)
+        elapsed   = round(time.time() - start, 1)
         confirmed = (
-            behavior_result.label == "TAKEN" and
-            verify_result.label   == "CORRECT"
+            id_result.label     == "CORRECT" and
+            intake_result.label == "INTAKE_CONFIRMED"
         )
 
         return VisionOutput(
-            behavior_label      = behavior_result.label,
-            behavior_confidence = behavior_result.confidence,
-            behavior_score      = behavior_result.score,
-            behavior_feedback   = behavior_result.feedback,
-            verified_label      = verify_result.label,
-            verified_confidence = verify_result.confidence,
-            verified_med_name   = verify_result.matched_name,
-            verified_med_dose   = verify_result.matched_dose,
-            verify_feedback     = verify_result.feedback,
-            med_object_detected = obj_result.med_object_present,
-            liquid_med_detected = obj_result.liquid_med_present,
-            confirmed           = confirmed,
-            session_duration_s  = elapsed,
+            id_label        = id_result.label,
+            id_confidence   = id_result.confidence,
+            id_med_name     = id_result.matched_name,
+            id_med_dose     = id_result.matched_dose,
+            id_feedback     = id_result.feedback,
+            id_method       = id_result.method,
+            alert_message   = id_result.alert_message,
+            intake_label    = intake_result.label,
+            intake_conf     = intake_result.confidence,
+            pill_visible    = intake_result.pill_visible,
+            sirop_visible   = intake_result.sirop_visible,
+            best_class      = intake_result.med_class or obj_result.best_class,
+            intake_feedback = intake_result.feedback,
+            behavior_label  = behav_result.label,
+            behavior_score  = behav_result.score,
+            confirmed       = confirmed,
+            session_phase   = phase,
+            session_duration_s = elapsed,
         )
 
-    # ── Frame-level API (for Flutter/mobile streaming) ─────────────────────
+    # ── Per-frame API (mobile streaming) ───────
 
-    def process_frame(self, bgr: np.ndarray) -> dict:
+    def process_frame(self, bgr: np.ndarray, phase: str = PipelinePhase.IDENTIFYING,
+                      behavior_score: int = 0) -> dict:
         """
-        Stateless per-frame call for embedding into a mobile video stream.
-        The caller accumulates frames externally.
-        Returns a lightweight dict suitable for JSON serialisation.
-        """
-        obj    = self.detector.detect(bgr)
-        behav  = self.behavior.process_frame(bgr)
-        verify = MedVerifyResult()
+        Stateless per-frame call for Flutter/mobile streaming.
+        The caller owns the phase state and passes it in each time.
 
-        if obj.med_object_present:
-            verify = self.verifier.verify(bgr)
+        Parameters
+        ----------
+        bgr            : camera frame
+        phase          : current pipeline phase (IDENTIFYING | INTAKE)
+        behavior_score : latest BehaviorDetector score (for Phase 2)
+
+        Returns a lightweight dict for JSON serialisation.
+        """
+        obj   = self.detector.detect(bgr)
+        behav = self.behavior.process_frame(bgr, yolo_boost=obj.behavior_score_boost)
+
+        if phase == PipelinePhase.IDENTIFYING:
+            id_res     = self.verifier.identify(bgr)
+            intake_res = IntakeResult()
+        else:
+            id_res     = MedVerifyResult()
+            intake_res = self.verifier.check_intake(bgr, behavior_score=behav.score)
 
         return {
-            "behavior":          behav.label,
-            "behavior_score":    behav.score,
-            "behavior_feedback": behav.feedback,
-            "med_detected":      obj.med_object_present,
-            "verified":          verify.label,
-            "verified_name":     verify.matched_name,
-            "feedback":          verify.feedback or behav.feedback,
-            "confirmed":         (behav.label == "TAKEN" and
-                                  verify.label == "CORRECT"),
+            # Phase info
+            "phase":              phase,
+            # Phase 1
+            "id_label":           id_res.label,
+            "id_confidence":      round(id_res.confidence, 2),
+            "id_matched_name":    id_res.matched_name,
+            "id_matched_dose":    id_res.matched_dose,
+            "id_feedback":        id_res.feedback,
+            "id_method":          id_res.method,
+            "alert_message":      id_res.alert_message,
+            # Phase 2
+            "intake_label":       intake_res.label,
+            "intake_confidence":  round(intake_res.confidence, 2),
+            "pill_visible":       intake_res.pill_visible,
+            "sirop_visible":      intake_res.sirop_visible,
+            "med_class":          intake_res.med_class,
+            "intake_feedback":    intake_res.feedback,
+            # Object detection
+            "pill_detected":      obj.pill_detected,
+            "sirop_detected":     obj.sirop_detected,
+            "best_class":         obj.best_class,
+            "best_confidence":    round(obj.best_confidence, 2),
+            # Behavior
+            "behavior":           behav.label,
+            "behavior_score":     behav.score,
+            "behavior_feedback":  behav.feedback,
+            # Combined result
+            "confirmed":          (
+                id_res.label     == "CORRECT" and
+                intake_res.label == "INTAKE_CONFIRMED"
+            ),
         }
 
 
 # ──────────────────────────────────────────────
-# Real-time hint overlay helper
+# Real-time hint overlay
 # ──────────────────────────────────────────────
 
-def _draw_realtime_hints(frame, behav: BehaviorResult,
-                          verify: MedVerifyResult) -> None:
-    """
-    Contextual user-guidance overlay for the demo window.
-    Mimics the real-time feedback layer specified in the requirements.
-    """
+def _draw_realtime_hints(
+    frame,
+    phase:        str,
+    id_res:       MedVerifyResult,
+    intake_res:   IntakeResult,
+    behav:        BehaviorResult,
+    obj:          ObjectDetectionResult,
+) -> None:
     hints = []
 
-    if not behav.evidence.get("hand_to_mouth_rate", 0):
-        hints.append("Bring your hand closer to your mouth")
-    if verify.label == "UNCERTAIN":
-        hints.append("Show the medicine label to the camera")
-    if verify.confidence > 0 and verify.confidence < 0.5:
-        hints.append("Move closer — hold the package steady")
-    if verify.label == "CORRECT":
-        hints.append("✓ Good — medication recognised!")
-    if behav.label == "TAKEN":
-        hints.append("✓ Intake gesture confirmed")
+    if phase == PipelinePhase.IDENTIFYING:
+        if not obj.med_object_present:
+            hints.append("Hold the medicine box up to the camera")
+        elif id_res.label == "UNCERTAIN":
+            hints.append("Show the label — I need to read the name")
+        elif id_res.label == "CORRECT":
+            hints.append(f"✓ {id_res.matched_name} identified — confirming…")
+        elif id_res.label == "WRONG":
+            hints.append(f"⚠ Wrong dose detected — check the box!")
+    else:
+        if not intake_res.pill_visible and not intake_res.sirop_visible:
+            hints.append("Hold the medicine visible to the camera")
+        if behav.label != "TAKEN":
+            hints.append("Bring the medication to your mouth")
+        if intake_res.label == "INTAKE_CONFIRMED":
+            hints.append("✓ Intake confirmed!")
 
     y = 110
-    for hint in hints[:3]:   # show at most 3 lines
+    for hint in hints[:3]:
         cv2.putText(frame, hint, (12, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 230, 100), 1)
         y += 26
