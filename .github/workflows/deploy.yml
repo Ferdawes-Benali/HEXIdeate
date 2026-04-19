@@ -1,0 +1,70 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive infra/terraform/
+
+      - name: Terraform Init
+        working-directory: infra/terraform/aws
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: infra/terraform/aws
+        run: terraform plan -var-file="terraform.prod.tfvars" -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: infra/terraform/aws
+        run: terraform apply -auto-approve tfplan
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region us-east-1 \
+            --name hexideate-prod
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Deploy Kubernetes manifests
+        run: |
+          kubectl apply -f infra/k8s/01-infrastructure.yaml
+          kubectl apply -f infra/k8s/02-services.yaml
+          kubectl apply -f infra/k8s/03-gateway-agent.yaml
+          kubectl apply -f infra/k8s/04-scaling-network.yaml
+
+      - name: Verify Deployment
+        run: |
+          kubectl wait --for=condition=available --timeout=600s \
+            deployment/gateway -n hexideate
+
+      - name: Notify Deployment
+        if: success()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'HexIdeate deployed successfully to production'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        continue-on-error: true

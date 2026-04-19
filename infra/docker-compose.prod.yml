@@ -1,0 +1,44 @@
+version: '3.9'
+
+# Production-like overrides for testing
+# Use: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up
+
+services:
+  postgres:
+    environment:
+      POSTGRES_INITDB_ARGS: "-c max_connections=100 -c shared_buffers=256MB"
+    restart: always
+
+  redis:
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    restart: always
+
+  agent-service:
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  gateway:
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  vision-service:
+    restart: always
+
+  voice-service:
+    restart: always
+
+  analytics-service:
+    restart: always
+
+  notification-service:
+    restart: always

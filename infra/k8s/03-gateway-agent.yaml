@@ -1,0 +1,205 @@
+---
+# Agent Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-service
+  namespace: hexideate
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: agent-service
+  template:
+    metadata:
+      labels:
+        app: agent-service
+    spec:
+      containers:
+      - name: agent-service
+        image: hexideate/agent-service:latest
+        imagePullPolicy: Always
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://postgres:$(DB_PASSWORD)@postgres:5432/hexideate"
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: hexideate-secrets
+              key: DB_PASSWORD
+        - name: REDIS_URL
+          value: "redis://redis:6379/0"
+        - name: CHROMA_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: hexideate-config
+              key: CHROMA_HOST
+        - name: CHROMA_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: hexideate-config
+              key: CHROMA_PORT
+        - name: GOOGLE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: hexideate-secrets
+              key: GOOGLE_API_KEY
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: hexideate-config
+              key: LOG_LEVEL
+        ports:
+        - containerPort: 8000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "1000m"
+          limits:
+            memory: "3Gi"
+            cpu: "2000m"
+
+---
+# Agent Service Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-service
+  namespace: hexideate
+spec:
+  selector:
+    app: agent-service
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
+
+---
+# API Gateway Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: hexideate
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+      - name: gateway
+        image: hexideate/gateway:latest
+        imagePullPolicy: Always
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://postgres:$(DB_PASSWORD)@postgres:5432/hexideate"
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: hexideate-secrets
+              key: DB_PASSWORD
+        - name: REDIS_URL
+          value: "redis://redis:6379/0"
+        - name: AGENT_SERVICE_URL
+          value: "http://agent-service:8000"
+        - name: VISION_SERVICE_URL
+          value: "http://vision-service:8000"
+        - name: VOICE_SERVICE_URL
+          value: "http://voice-service:8000"
+        - name: ANALYTICS_SERVICE_URL
+          value: "http://analytics-service:8000"
+        - name: NOTIFICATION_SERVICE_URL
+          value: "http://notification-service:8000"
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: hexideate-secrets
+              key: JWT_SECRET_KEY
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: hexideate-config
+              key: LOG_LEVEL
+        ports:
+        - containerPort: 8000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+---
+# API Gateway Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: hexideate
+spec:
+  selector:
+    app: gateway
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+  type: LoadBalancer
+
+---
+# Ingress for API Gateway
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hexideate-ingress
+  namespace: hexideate
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - api.hexideate.com
+    secretName: hexideate-tls
+  rules:
+  - host: api.hexideate.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: gateway
+            port:
+              number: 8000

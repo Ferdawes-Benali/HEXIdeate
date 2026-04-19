@@ -1,0 +1,208 @@
+version: '3.9'
+
+services:
+  # Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: hexideate-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-hexideate}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hexideate-network
+
+  # Redis (caching & session memory)
+  redis:
+    image: redis:7-alpine
+    container_name: hexideate-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hexideate-network
+
+  # Chroma (Vector DB for RAG)
+  chroma:
+    image: ghcr.io/chroma-core/chroma:latest
+    container_name: hexideate-chroma
+    environment:
+      CHROMA_DB_IMPL: duckdb+parquet
+      CHROMA_TELEMETRY_IMPL: anonymized_telemetry
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hexideate-network
+
+  # Vision Service (Pill Detection)
+  vision-service:
+    build:
+      context: ../services/vision-service
+      dockerfile: Dockerfile
+    container_name: hexideate-vision
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8001:8000"
+    depends_on:
+      - postgres
+    volumes:
+      - ../services/vision-service:/app
+    networks:
+      - hexideate-network
+    restart: unless-stopped
+
+  # Voice Service (STT/TTS)
+  voice-service:
+    build:
+      context: ../services/voice-service
+      dockerfile: Dockerfile
+    container_name: hexideate-voice
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8002:8000"
+    depends_on:
+      - postgres
+    volumes:
+      - ../services/voice-service:/app
+    networks:
+      - hexideate-network
+    restart: unless-stopped
+
+  # Analytics Service
+  analytics-service:
+    build:
+      context: ../services/analytics-service
+      dockerfile: Dockerfile
+    container_name: hexideate-analytics
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-hexideate}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8003:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../services/analytics-service:/app
+    networks:
+      - hexideate-network
+    restart: unless-stopped
+
+  # Notification Service
+  notification-service:
+    build:
+      context: ../services/notification-service
+      dockerfile: Dockerfile
+    container_name: hexideate-notification
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-hexideate}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8004:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../services/notification-service:/app
+    networks:
+      - hexideate-network
+    restart: unless-stopped
+
+  # Agent Service (Main AI)
+  agent-service:
+    build:
+      context: ../services/agent_service
+      dockerfile: Dockerfile
+    container_name: hexideate-agent
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-hexideate}
+      REDIS_URL: redis://redis:6379/0
+      CHROMA_HOST: chroma
+      CHROMA_PORT: 8000
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8005:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+    volumes:
+      - ../services/agent_service:/app
+    networks:
+      - hexideate-network
+    restart: unless-stopped
+
+  # API Gateway
+  gateway:
+    build:
+      context: ../services/gateway
+      dockerfile: Dockerfile
+    container_name: hexideate-gateway
+    environment:
+      AGENT_SERVICE_URL: http://agent-service:8000
+      VISION_SERVICE_URL: http://vision-service:8000
+      VOICE_SERVICE_URL: http://voice-service:8000
+      ANALYTICS_SERVICE_URL: http://analytics-service:8000
+      NOTIFICATION_SERVICE_URL: http://notification-service:8000
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-hexideate}
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8080:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      agent-service:
+        condition: service_started
+      vision-service:
+        condition: service_started
+      voice-service:
+        condition: service_started
+      analytics-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+    volumes:
+      - ../services/gateway:/app
+    networks:
+      - hexideate-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  chroma_data:
+
+networks:
+  hexideate-network:
+    driver: bridge

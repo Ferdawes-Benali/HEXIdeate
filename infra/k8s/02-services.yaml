@@ -1,0 +1,331 @@
+---
+# Chroma Vector DB Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chroma
+  namespace: hexideate
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chroma
+  template:
+    metadata:
+      labels:
+        app: chroma
+    spec:
+      containers:
+      - name: chroma
+        image: ghcr.io/chroma-core/chroma:latest
+        env:
+        - name: CHROMA_DB_IMPL
+          value: "duckdb+parquet"
+        - name: CHROMA_TELEMETRY_IMPL
+          value: "anonymized_telemetry"
+        ports:
+        - containerPort: 8000
+        livenessProbe:
+          httpGet:
+            path: /api/v1/heartbeat
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/v1/heartbeat
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+
+---
+# Chroma Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: chroma
+  namespace: hexideate
+spec:
+  selector:
+    app: chroma
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
+
+---
+# Vision Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vision-service
+  namespace: hexideate
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vision-service
+  template:
+    metadata:
+      labels:
+        app: vision-service
+    spec:
+      containers:
+      - name: vision-service
+        image: hexideate/vision-service:latest
+        imagePullPolicy: Always
+        env:
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: hexideate-config
+              key: LOG_LEVEL
+        ports:
+        - containerPort: 8000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+---
+# Vision Service Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: vision-service
+  namespace: hexideate
+spec:
+  selector:
+    app: vision-service
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
+
+---
+# Voice Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voice-service
+  namespace: hexideate
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: voice-service
+  template:
+    metadata:
+      labels:
+        app: voice-service
+    spec:
+      containers:
+      - name: voice-service
+        image: hexideate/voice-service:latest
+        imagePullPolicy: Always
+        env:
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: hexideate-config
+              key: LOG_LEVEL
+        ports:
+        - containerPort: 8000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+---
+# Voice Service Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: voice-service
+  namespace: hexideate
+spec:
+  selector:
+    app: voice-service
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
+
+---
+# Analytics Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-service
+  namespace: hexideate
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: analytics-service
+  template:
+    metadata:
+      labels:
+        app: analytics-service
+    spec:
+      containers:
+      - name: analytics-service
+        image: hexideate/analytics-service:latest
+        imagePullPolicy: Always
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://postgres:$(DB_PASSWORD)@postgres:5432/hexideate"
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: hexideate-secrets
+              key: DB_PASSWORD
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: hexideate-config
+              key: LOG_LEVEL
+        ports:
+        - containerPort: 8000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+
+---
+# Analytics Service Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-service
+  namespace: hexideate
+spec:
+  selector:
+    app: analytics-service
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
+
+---
+# Notification Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: hexideate
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+      - name: notification-service
+        image: hexideate/notification-service:latest
+        imagePullPolicy: Always
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://postgres:$(DB_PASSWORD)@postgres:5432/hexideate"
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: hexideate-secrets
+              key: DB_PASSWORD
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: hexideate-config
+              key: LOG_LEVEL
+        ports:
+        - containerPort: 8000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+
+---
+# Notification Service Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: hexideate
+spec:
+  selector:
+    app: notification-service
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP

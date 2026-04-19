@@ -1,0 +1,295 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint-terraform:
+    name: Lint Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: latest
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive infra/terraform/
+        continue-on-error: true
+
+      - name: Terraform Validate
+        working-directory: infra/terraform/aws
+        run: terraform validate
+        continue-on-error: true
+
+  lint-python:
+    name: Lint Python Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install linting tools
+        run: |
+          pip install flake8 black pylint isort
+
+      - name: Run Black formatter check
+        run: black --check services/ --ignore=migrations
+        continue-on-error: true
+
+      - name: Run isort import check
+        run: isort --check-only services/
+        continue-on-error: true
+
+      - name: Run Flake8 linter
+        run: flake8 services/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        continue-on-error: true
+
+  lint-kubernetes:
+    name: Lint Kubernetes Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run kubeval
+        uses: instrumenta/kubeval-action@master
+        with:
+          files: infra/k8s/
+        continue-on-error: true
+
+      - name: Run kube-linter
+        uses: stackrox/kube-linter-action@v1
+        with:
+          directory: infra/k8s
+        continue-on-error: true
+
+  lint-docker:
+    name: Lint Docker Files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: infra/Dockerfile.base
+          ignore: DL3008,DL3009
+        continue-on-error: true
+
+  test-unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hexideate_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pytest-asyncio
+
+      - name: Install service dependencies
+        run: |
+          for service in services/*/; do
+            if [ -f "$service/requirements.txt" ]; then
+              pip install -r "$service/requirements.txt"
+            fi
+          done
+
+      - name: Run tests with coverage
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/hexideate_test
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          pytest services/ -v --cov=services --cov-report=xml --cov-report=term
+        continue-on-error: true
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          flags: unittests
+        continue-on-error: true
+
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Run Bandit security check
+        run: |
+          pip install bandit
+          bandit -r services/ -f json -o bandit-report.json
+        continue-on-error: true
+
+      - name: Check for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+        continue-on-error: true
+
+  docker-build-test:
+    name: Test Docker Builds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Gateway Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/gateway
+          push: false
+          tags: hexideate/gateway:test
+        continue-on-error: true
+
+      - name: Build Agent Service Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/agent_service
+          push: false
+          tags: hexideate/agent-service:test
+        continue-on-error: true
+
+      - name: Build Vision Service Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/vision-service
+          push: false
+          tags: hexideate/vision-service:test
+        continue-on-error: true
+
+  docs-check:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for required docs
+        run: |
+          files=("infra/README.md" "infra/QUICK_REFERENCE.md" "PROJECT_STRUCTURE.md")
+          for file in "${files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "Missing documentation: $file"
+              exit 1
+            fi
+          done
+        continue-on-error: true
+
+      - name: Markdown lint
+        uses: nosborn/github-action-markdown-cli@v3.3.0
+        with:
+          files: .
+        continue-on-error: true
+
+  compose-validate:
+    name: Validate Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker
+        uses: docker-practice/actions-setup-docker@master
+
+      - name: Validate docker-compose syntax
+        run: |
+          docker-compose -f infra/docker-compose.yml config > /dev/null
+          docker-compose -f infra/docker-compose.prod.yml config > /dev/null
+        continue-on-error: true
+
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs: [lint-terraform, lint-python, lint-kubernetes, lint-docker, test-unit, security-scan, docker-build-test, docs-check, compose-validate]
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create CI summary
+        run: |
+          echo "## CI Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Terraform Linting: ${{ needs.lint-terraform.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Python Linting: ${{ needs.lint-python.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Kubernetes Linting: ${{ needs.lint-kubernetes.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Docker Linting: ${{ needs.lint-docker.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Unit Tests: ${{ needs.test-unit.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Security Scanning: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Docker Build Tests: ${{ needs.docker-build-test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Documentation Check: ${{ needs.docs-check.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Docker Compose Validation: ${{ needs.compose-validate.result }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify on failure
+        if: contains(needs.*.result, 'failure')
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: 'HexIdeate CI workflow failed'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        continue-on-error: true

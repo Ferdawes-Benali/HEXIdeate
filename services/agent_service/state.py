@@ -1,12 +1,14 @@
-from typing import Annotated, List, TypedDict
-from langchain_core.messages import BaseMessage
+from typing import Annotated, Any, List, Optional
 from langgraph.graph.message import add_messages
+from typing_extensions import TypedDict
+
 
 class AgentState(TypedDict):
-    messages: Annotated[List[BaseMessage], add_messages]
-    
-    identified_pills: List[str]
-    risk_score: float
-    requires_human_review: bool
-    current_action: str
-    
+    messages: Annotated[list, add_messages]
+    current_action: Optional[str]
+    user_id: Optional[int]
+    expected_pill: Optional[str]
+    identified_pills: Optional[List[str]]
+    video_input: Optional[str]
+    status: Optional[str]
+    safety_alert: Optional[bool]
