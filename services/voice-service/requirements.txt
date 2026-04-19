@@ -1,0 +1,40 @@
+# voice-service/requirements.txt
+# ──────────────────────────────────────────────
+# Python dependencies for Voice Service (STT + TTS)
+# ──────────────────────────────────────────────
+
+# FastAPI and server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# Audio processing
+numpy>=1.24.0
+soundfile>=0.12.1
+
+# STT - Whisper (choose one)
+# Option 1: OpenAI Whisper
+openai-whisper>=20231117
+
+# Option 2: Faster-Whisper (faster, recommended for production)
+# faster-whisper>=1.0.0
+
+# TTS - Coqui TTS (choose one)
+# Option 1: Coqui TTS
+# TTS>=0.21.0
+
+# Option 2: Edge TTS
+edge-tts>=6.1.0
+
+# Option 3: gTTS
+# gTTS>=2.4.0
+
+# Option 4: pyttsx3 (offline)
+# pyttsx3>=3.9
+
+# Utilities
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+
+# Optional: for better audio handling
+audioread>=3.0.0
