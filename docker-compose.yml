@@ -1,0 +1,88 @@
+services:
+  # Database for Patient records, Medication, and Logs
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: medassist
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # Redis for session memory and rate limiting
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  # API Gateway - The "Front Door" for your Flutter app
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile 
+    ports:
+      - "8080:80"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - AGENT_SERVICE_URL=http://agent-service:8000
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8004
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8003
+    depends_on:
+      - redis
+
+  # AI Agent - Core Logic & Drug Interaction
+  agent-service:
+    build:
+      context: .
+      dockerfile: services/agent-service/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/medassist
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - db
+      - redis
+
+  # Analytics - Predictions and ML
+  analytics-service:
+    build:
+      context: .
+      dockerfile: services/analytics-service/Dockerfile
+    ports:
+      - "8004:8004"
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/medassist
+
+  # Notifications - Sending alerts to the app
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/medassist
+  vision-service:
+    build: ./services/vision-service
+    ports:
+      - "8008:8008"
+    volumes:
+      - ./services/vision-service/model:/app/model
+
+  # Voice - STT (8005) and TTS (8006)
+  voice-service:
+    build: ./services/vision-service
+    ports:
+      - "8005:8004" # STT
+      - "8006:8005" # TTS
+    environment:
+      - STT_DEVICE=cpu
+      - TTS_DEVICE=cpu
+
+volumes:
+  postgres_data:

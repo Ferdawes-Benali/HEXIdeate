@@ -129,5 +129,5 @@ class SessionMemory(SQLModel, table=True):
     session_id: str = Field(index=True)
     role: str  # user, assistant
     content: str
-    metadata: Optional[str] = None
+    data: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)

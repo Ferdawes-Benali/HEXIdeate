@@ -16,7 +16,7 @@ from shared.config import settings
 from shared.database import engine, get_session
 from shared.models import Patient, Alert, Medication
 from shared.utils import get_logger
-from .drug_db import find_interactions, normalize_med_name
+from drug_db import find_interactions, normalize_med_name
 
 logger = get_logger(__name__)
 

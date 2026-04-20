@@ -52,12 +52,33 @@ from typing import Optional, Callable
 import cv2
 import numpy as np
 
-from .behavior_detector import BehaviorDetector, BehaviorResult
-from .med_verifier      import MedVerifier, MedVerifyResult, IntakeResult
-from .object_detector   import ObjectDetector, ObjectDetectionResult
+from behavior_detector import BehaviorDetector, BehaviorResult
+from med_verifier      import MedVerifier, MedVerifyResult, IntakeResult
+from object_detector   import ObjectDetector, ObjectDetectionResult
 
 logger = logging.getLogger(__name__)
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+app = FastAPI(title="Vision Service")
+
+# This allows your other services (like the Gateway) to talk to this one
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+async def health_check():
+    return {"status": "healthy", "service": "vision-detector"}
+@app.post("/detect")
+async def detect_behavior(image_data: dict): 
+    # This is where your code actually 'runs'
+    detector = BehaviorDetector()
+    results = detector.analyze(image_data)
+    return results
 
 # ──────────────────────────────────────────────
 # Pipeline state enum

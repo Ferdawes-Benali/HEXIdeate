@@ -165,9 +165,6 @@ def _all_names(med: dict) -> List[str]:
     return [n.lower() for n in [med["name"]] + med.get("aliases", [])]
 
 
-# ──────────────────────────────────────────────
-# Phase 1a–c — OCR helpers
-# ──────────────────────────────────────────────
 
 def preprocess_for_ocr(bgr: np.ndarray) -> np.ndarray:
     """Resize → grayscale → denoise → adaptive threshold for best Tesseract accuracy."""

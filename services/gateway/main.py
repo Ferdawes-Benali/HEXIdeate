@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .middleware.auth import AuthMiddleware
-from .middleware.rate_limit import RateLimiterMiddleware
-from .routers import agent, patients, analytics, notifications
+from middleware.auth import AuthMiddleware
+from middleware.rate_limit import RateLimiterMiddleware
+from routers import agent, patients, analytics, notifications, voice
 
 app = FastAPI(title="MedMind API Gateway", version="1.0.0")
 
@@ -21,6 +21,7 @@ app.include_router(agent.router,         prefix="/api/agent",         tags=["Age
 app.include_router(patients.router,      prefix="/api/patients",      tags=["Patients"])
 app.include_router(analytics.router,     prefix="/api/analytics",     tags=["Analytics"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
+app.include_router(voice.router,         prefix="/api/voice",         tags=["Voice"])
 
 
 @app.get("/health")
