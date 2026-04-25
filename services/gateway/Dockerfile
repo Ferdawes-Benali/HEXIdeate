@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir \
     fastapi uvicorn httpx \
-    pyjwt redis pydantic pydantic-settings sqlmodel email-validator psycopg2-binary asyncpg 
+    pyjwt redis pydantic pydantic-settings sqlmodel email-validator psycopg2-binary asyncpg python-multipart python-jose[cryptography] passlib[bcrypt]
 
 COPY services/shared /app/shared
 COPY services/gateway /app

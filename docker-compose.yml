@@ -1,5 +1,4 @@
 services:
-  # Database for Patient records, Medication, and Logs
   db:
     image: postgres:15-alpine
     environment:
@@ -11,13 +10,11 @@ services:
     ports:
       - "5432:5432"
 
-  # Redis for session memory and rate limiting
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
 
-  # API Gateway - The "Front Door" for your Flutter app
   gateway:
     build:
       context: .
@@ -32,7 +29,6 @@ services:
     depends_on:
       - redis
 
-  # AI Agent - Core Logic & Drug Interaction
   agent-service:
     build:
       context: .
@@ -48,7 +44,6 @@ services:
       - db
       - redis
 
-  # Analytics - Predictions and ML
   analytics-service:
     build:
       context: .
@@ -58,7 +53,6 @@ services:
     environment:
       - DATABASE_URL=postgresql://user:password@db:5432/medassist
 
-  # Notifications - Sending alerts to the app
   notification-service:
     build:
       context: .
@@ -74,12 +68,11 @@ services:
     volumes:
       - ./services/vision-service/model:/app/model
 
-  # Voice - STT (8005) and TTS (8006)
   voice-service:
-    build: ./services/vision-service
+    build: ./services/voice-service
     ports:
-      - "8005:8004" # STT
-      - "8006:8005" # TTS
+      - "8005:8004" #
+      - "8006:8005" # 
     environment:
       - STT_DEVICE=cpu
       - TTS_DEVICE=cpu

@@ -40,3 +40,23 @@ Return ONLY one word: MATCH, CONFIRM, or NO_MATCH."""
         
     except Exception as e:
         return "NO_MATCH"
+def run_tests():
+    test_cases = [
+        # Format: (Detected OCR, Patient Meds, Expected Result)
+        ("Doliprane 1000", ["Doliprane 500mg", "Adol 1000mg"], "MATCH"),
+        ("Adol", ["Doliprane"], "CONFIRM"),  # Generic equivalent
+        ("Amoxil", ["Augmentin"], "CONFIRM"), # Same class/DCI (if applicable)
+        ("Zyrtec", ["Doliprane"], "NO_MATCH"), # Completely different
+        ("D0lipran3", ["Doliprane"], "MATCH"),  # OCR typo test
+    ]
+
+    print(f"{'Detected':<15} | {'Expected':<10} | {'Actual':<10} | {'Status'}")
+    print("-" * 55)
+
+    for detected, inventory, expected in test_cases:
+        actual = fuzzy_pill_match(detected, inventory)
+        status = "✅ PASS" if actual == expected else "❌ FAIL"
+        print(f"{detected:<15} | {expected:<10} | {actual:<10} | {status}")
+
+if __name__ == "__main__":
+    run_tests()

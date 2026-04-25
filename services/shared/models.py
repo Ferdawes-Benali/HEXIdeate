@@ -38,8 +38,10 @@ class Medication(SQLModel, table=True):
     intakes: List["IntakeHistory"] = Relationship(back_populates="medication", cascade_delete=True)
     schedules: List["MedicationSchedule"] = Relationship(back_populates="medication", cascade_delete=True)
     interactions: List["DrugInteraction"] = Relationship(
-        back_populates="medication1",
-        sa_relationship_kwargs={"foreign_keys": "DrugInteraction.medication1_id"}
+        sa_relationship_kwargs={
+            "primaryjoin": "Medication.id == DrugInteraction.medication1_id",
+            "foreign_keys": "[DrugInteraction.medication1_id]"
+        }
     )
 
 
@@ -89,9 +91,17 @@ class DrugInteraction(SQLModel, table=True):
     description: str
     recommendation: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
-
-    medication1: Medication = Relationship(back_populates="interactions")
-
+    medication1: "Medication" = Relationship(
+        sa_relationship_kwargs={
+            "primaryjoin": "DrugInteraction.medication1_id == Medication.id",
+            "foreign_keys": "[DrugInteraction.medication1_id]"
+        }
+    )
+    medication2: "Medication" = Relationship(
+        sa_relationship_kwargs={
+            "primaryjoin": "DrugInteraction.medication2_id == Medication.id",
+            "foreign_keys": "[DrugInteraction.medication2_id]"
+        })
 
 class Alert(SQLModel, table=True):
     """Alert/notification record"""

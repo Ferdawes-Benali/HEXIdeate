@@ -1,3 +1,5 @@
 .env
 .idea
 flutter/
+__pycache__
+*.pyc

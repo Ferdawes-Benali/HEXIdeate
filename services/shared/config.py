@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     VOICE_SERVICE_URL: str = "http://voice-service:8000"
     ANALYTICS_SERVICE_URL: str = "http://analytics-service:8000"
     NOTIFICATION_SERVICE_URL: str = "http://notification-service:8000"
-    
+    DRUG_SERVICE_URL: str = "http://localhost:8000"
     # Google API
     GOOGLE_API_KEY: str = ""
     

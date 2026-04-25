@@ -1,3 +1,4 @@
+"""Context window : Redis-based conversation history management for the agent service."""
 import json
 import redis
 from config import settings

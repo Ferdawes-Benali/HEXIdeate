@@ -1,3 +1,5 @@
+""" The retrieval augmented generation (RAG) module for Chroma vector store. """
+
 import os
 import hashlib
 from langchain_chroma import Chroma
@@ -8,7 +10,7 @@ from config import settings
 ABS_PATH = os.path.abspath("./chroma_db")
 
 _embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/embedding-001",
+    model="models/gemini-embedding-001",
     google_api_key=settings.GOOGLE_API_KEY,
 )
 
