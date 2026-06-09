@@ -59,7 +59,7 @@ Available on **iOS** and **Android**, 7arbouche is designed to improve medicatio
 
 ## Tech Stack
 
-* Flutter / React Native (depending on your implementation)
+* Flutter
 * Computer Vision
 * Voice Assistant Technologies
 * Mobile Development (iOS & Android)
